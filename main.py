@@ -25,7 +25,7 @@ from telegram.ext import (
 )
 from telegram.error import Forbidden, TelegramError
 
-TOKEN = os.getenv("TG_BOT_TOKEN", "8305490732:AAHhV5MceF35nmbGjvC23tajpWOY1zrYspg")
+TOKEN = os.getenv("TG_BOT_TOKEN")
 ADMIN_CHAT_ID = int(os.getenv("ADMIN_CHAT_ID", "888140003"))
 PAYMENTS_PROVIDER_TOKEN = os.getenv("PAYMENTS_PROVIDER_TOKEN", "")
 CURRENCY = "RUB"
@@ -616,12 +616,11 @@ def main() -> None:
     app = ApplicationBuilder().token(TOKEN).build()
 
     # --- Обработчики ---
-    # ВАЖНО: /start и /cancel добавляются отдельно, чтобы они *всегда* сбрасывали user_data
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("cancel", cancel))
 
     conv_handler = ConversationHandler(
-        entry_points=[],  # Не добавляем /start или /cancel сюда
+        entry_points=[],
         states={
             TYPE_CHOICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, type_choice)],
             SEND_FILE: [MessageHandler((filters.Document.ALL | filters.PHOTO | filters.TEXT) & ~filters.COMMAND, send_file)],
@@ -632,7 +631,7 @@ def main() -> None:
             PAYMENT: [MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment_handler)],
             WAITING_FOR_RECEIPT: [MessageHandler(filters.ChatType.PRIVATE & ~filters.COMMAND, waiting_for_receipt)],
         },
-        fallbacks=[],  # /start и /cancel обрабатываются глобально
+        fallbacks=[],
         allow_reentry=False,
     )
 
@@ -640,22 +639,24 @@ def main() -> None:
     app.add_handler(PreCheckoutQueryHandler(precheckout_handler))
     app.add_error_handler(error_handler)
 
-    # --- Webhook ---
-    WEBHOOK_URL = os.getenv("https://reshubot-production.up.railway.app/webhook")  # Пример: https://reshubot-production.up.railway.app/webhook
-    if not WEBHOOK_URL:
-        logger.error("Переменная окружения WEBHOOK_URL не установлена. Webhook не будет настроен.")
-        return
-
-    # Используем PORT от Railway
-    port = int(os.getenv("PORT", 8000))
-
-    logger.info(f"Запуск webhook на {WEBHOOK_URL}, порт {port}")
-    app.run_webhook(
-        listen="0.0.0.0",  # Слушаем все IP
-        port=port,         # Порт от Railway
-        url_path="/webhook", # Путь, по которому Telegram стучится
-        webhook_url=WEBHOOK_URL, # Полный URL, куда Telegram отправляет
-        drop_pending_updates=True, # Сбросить старые обновления
-    )
+    # --- Режим запуска (Polling или Webhook) ---
+    WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+    
+    if WEBHOOK_URL:
+        # Webhook режим для Railway
+        port = int(os.getenv("PORT", 8000))
+        
+        logger.info(f"Запуск webhook на {WEBHOOK_URL}, порт {port}")
+        app.run_webhook(
+            listen="0.0.0.0",
+            port=port,
+            url_path="/webhook",
+            webhook_url=WEBHOOK_URL,
+            drop_pending_updates=True,
+        )
+    else:
+        # Polling режим для локальной разработки
+        logger.info("WEBHOOK_URL не установлен, запускаю в режиме polling")
+        app.run_polling(drop_pending_updates=True)
 
 
