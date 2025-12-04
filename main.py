@@ -613,6 +613,17 @@ async def notify_admin_new_order(context, user, order, calc, paid, payment=None)
         logger.error(f"Не удалось уведомить администратора: {e}")
 
 def main() -> None:
+    # Логируем переменные окружения для отладки
+    logger.info("=== Запуск бота ===")
+    logger.info(f"TOKEN: {'***' + TOKEN[-4:] if TOKEN else 'НЕ УСТАНОВЛЕН'}")
+    logger.info(f"ADMIN_CHAT_ID: {ADMIN_CHAT_ID}")
+    logger.info(f"WEBHOOK_URL: {os.getenv('WEBHOOK_URL', 'НЕ УСТАНОВЛЕН')}")
+    logger.info(f"PORT: {os.getenv('PORT', 'НЕ УСТАНОВЛЕН')}")
+    
+    # Проверка токена (уберите хардкодный токен!)
+    if TOKEN == "8305490732:AAHhV5MceF35nmbGjvC23tajpWOY1zrYspg":
+        logger.error("ИСПОЛЬЗУЕТСЯ ХАРДКОДНЫЙ ТОКЕН! Создайте новый через @BotFather")
+    
     app = ApplicationBuilder().token(TOKEN).build()
 
     # --- Обработчики ---
@@ -639,7 +650,7 @@ def main() -> None:
     app.add_handler(PreCheckoutQueryHandler(precheckout_handler))
     app.add_error_handler(error_handler)
 
-    # --- Режим запуска (Polling или Webhook) ---
+    # --- Режим запуска ---
     WEBHOOK_URL = os.getenv("WEBHOOK_URL")
     
     if WEBHOOK_URL:
@@ -647,16 +658,30 @@ def main() -> None:
         port = int(os.getenv("PORT", 8000))
         
         logger.info(f"Запуск webhook на {WEBHOOK_URL}, порт {port}")
-        app.run_webhook(
-            listen="0.0.0.0",
-            port=port,
-            url_path="/webhook",
-            webhook_url=WEBHOOK_URL,
-            drop_pending_updates=True,
-        )
+        
+        # Установка webhook
+        try:
+            app.run_webhook(
+                listen="0.0.0.0",
+                port=port,
+                url_path="/webhook",
+                webhook_url=WEBHOOK_URL,
+                drop_pending_updates=True,
+                secret_token=None,  # Можно добавить для безопасности
+            )
+        except Exception as e:
+            logger.error(f"Ошибка при запуске webhook: {e}")
     else:
         # Polling режим для локальной разработки
         logger.info("WEBHOOK_URL не установлен, запускаю в режиме polling")
-        app.run_polling(drop_pending_updates=True)
-
+        try:
+            app.run_polling(
+                drop_pending_updates=True,
+                allowed_updates=Update.ALL_TYPES
+            )
+        except Exception as e:
+            logger.error(f"Ошибка при запуске polling: {e}")
+            
+if __name__ == "__main__":
+    main()
 
