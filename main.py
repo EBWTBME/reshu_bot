@@ -21,6 +21,7 @@ from telegram.ext import (
     ConversationHandler,
     CallbackQueryHandler,
     PreCheckoutQueryHandler,
+    Application,
 )
 from telegram.error import Forbidden, TelegramError
 
@@ -56,38 +57,32 @@ filterwarnings(action="ignore", message=r".*CallbackQueryHandler", category=PTBU
 ) = range(8)
 
 BASE_PRICES = {
-    "Задание": 249,
+    "Задание": 299,
     "Лабораторная/Контрольная": 999,
     "Экзаменационный вопрос": 999,
-    "Практика": 5999,
+    "Практика": 4999,
     "Курсовая": 9999,
     "Дипломная": 25999,
+    "Презентация для курсовой": 1999,
+    "Презентация для диплома": 4999,
 }
 
 BASE_PRICES_USD = {
-    "Задание": 3,
-    "Лабораторная/Контрольная": 10,
-    "Экзаменационный вопрос": 10,
+    "Задание": 5,
+    "Лабораторная/Контрольная": 12,
+    "Экзаменационный вопрос": 12,
     "Практика": 59,
-    "Курсовая": 99,
-    "Дипломная": 259,
+    "Курсовая": 119,
+    "Дипломная": 299,
+    "Презентация для курсовой": 99,
+    "Презентация для диплома": 199,
 }
 
 EXPLAIN_SURCHARGES = {
-    "default": 1999,
+    "default": 2999,
     "Курсовая": 5999,
     "Дипломная": 15999,
-    "Практика": 2999,
-}
-
-EXPLAIN_SURCHARGES_USD = {
-    "default": 19,
-    "Курсовая": 59,
-    "Дипломная": 159,
-    "Практика": 29,
-    "Задание": 19,
-    "Лабораторная/Контрольная": 19,
-    "Экзаменационный вопрос": 19,
+    "Практика": 1999,
 }
 
 WORK_TYPES_TRANSLATIONS = {
@@ -97,15 +92,12 @@ WORK_TYPES_TRANSLATIONS = {
     "Практика": "Practice",
     "Курсовая": "Coursework",
     "Дипломная": "Thesis",
+    "Презентация для курсовой": "Presentation for Coursework",
+    "Презентация для диплома": "Presentation for Thesis",
 }
 
-def urgency_surcharge(days: int) -> int:
-    val = 1100 - 100 * days
-    return max(val, 0)
-
-def urgency_surcharge_usd(days: int) -> int:
-    val = 12 - (days - 1)
-    return max(val, 0)
+def format_price_rub_usd(rub: int, usd: int) -> str:
+    return f"{rub}₽ / ${usd}"
 
 def calculate_price(selection: Dict[str, Any]) -> Dict[str, Any]:
     t = selection["type"]
@@ -137,23 +129,42 @@ def calculate_price(selection: Dict[str, Any]) -> Dict[str, Any]:
 
     if explain:
         surcharge_rub = EXPLAIN_SURCHARGES.get(t, EXPLAIN_SURCHARGES["default"])
-        surcharge_usd = EXPLAIN_SURCHARGES_USD.get(t, EXPLAIN_SURCHARGES_USD["default"])
+        surcharge_usd = round(surcharge_rub / 90)
         breakdown_rub.append(f"За объяснения = +{surcharge_rub}₽")
         breakdown_usd.append(f"For explanations = +${surcharge_usd}")
         total_rub += surcharge_rub
         total_usd += surcharge_usd
 
+    urgency_rub = 0
     if days > 0:
-        urg_rub = urgency_surcharge(days)
-        urg_usd = urgency_surcharge_usd(days)
-        if urg_rub > 0:
-            breakdown_rub.append(f"Срочность ({days} дн) = +{urg_rub}₽")
-            breakdown_usd.append(f"Urgency ({days} days) = +${urg_usd}")
-            total_rub += urg_rub
-            total_usd += urg_usd
+        if t in ("Задание", "Лабораторная/Контрольная"):
+            urgency_rub = max(1500 - 100 * (days - 1), 0)
+        elif t == "Экзаменационный вопрос":
+            urgency_rub = max(2000 - 200 * (days - 1), 0)
+        elif t == "Практика":
+            urgency_rub = max(4000 - 250 * (days - 1), 0)
+        elif t in ("Курсовая", "Презентация для курсовой"):
+            urgency_rub = max(6000 - 250 * (days - 1), 0)
+        elif t in ("Дипломная", "Презентация для диплома"):
+            base = BASE_PRICES[t]
+            max_urgency = 2 * base
+            urgency_val = max_urgency - 250 * (days - 1)
+            urgency_rub = max(urgency_val, base) - base
+
+        urgency_rub = int(max(urgency_rub, 0))
+        urgency_usd = round(urgency_rub / 90)
+        if urgency_rub > 0:
+            breakdown_rub.append(f"Срочность ({days} дн) = +{urgency_rub}₽")
+            breakdown_usd.append(f"Urgency ({days} days) = +${urgency_usd}")
+            total_rub += urgency_rub
+            total_usd += urgency_usd
         else:
             breakdown_rub.append(f"Срочность ({days} дн) = +0₽")
             breakdown_usd.append(f"Urgency ({days} days) = +$0")
+    else:
+        if days == 0:
+            breakdown_rub.append("Срочность = +0₽")
+            breakdown_usd.append("Urgency = +$0")
 
     return {
         "total_rub": total_rub,
@@ -179,16 +190,10 @@ def parse_choice_text(text: str) -> str:
 
 PHRASES = {
     "start_welcome": (
-        f"{EMOJI_PRIMARY} <b>Решу МФЮА / I'll Solve Your Assignments</b>\n\n"
+        f"{EMOJI_PRIMARY} <b>Заходи за решением! / Come in for a solution! </b>\n\n"
         "Привет! Я помогу вам оперативно и качественно решить учебные задания.\n"
         "Hi! I'll help you solve your academic assignments quickly and reliably.\n\n"
-        "<b>Как это работает / How it works:</b>\n"
-        "1) Выбираете тип → 2) Присылаете задание → 3) Нужны ли объяснения?\n"
-        "4) Срок → 5) Подтверждение → 6) Оплата\n\n"
-        "1) Choose type → 2) Send assignment → 3) Need explanations?\n"
-        "4) Deadline → 5) Confirm → 6) Pay\n\n"
-        "Начнём? Выберите тип работы:\n"
-        "Let's begin? Choose work type:"
+        "<b>Прайс-лист / Price List</b> 💰"
     ),
     "start_types": "Выберите тип работы / Choose work type:",
     "type_chosen": "Вы выбрали: {ru} / You have chosen: {en}.",
@@ -207,14 +212,14 @@ PHRASES = {
     ),
     "explain_prompt": (
         "Нужны ли подробные объяснения каждого шага решения?\n"
-        "За +1599₽ (за задания) / +5999₽ (за Курсовую) / +2999₽ (за Практику) / +20000₽ (за Дипломную) — я подробно объясню каждое задание и весь ход решения.\n\n"
+        "За +2999₽ (за задания) / +5999₽ (за Курсовую) / +2999₽ (за Практику) / +20000₽ (за Дипломную) — я подробно объясню каждое задание и весь ход решения.\n\n"
         "Need detailed explanations?\n"
-        "For +$19 (for Assignments) / +$59 (for Coursework) / +$29 (for Practice) / +$159 (for Thesis) — I'll explain each task and the entire solution process in detail."
+        "For +$35 (for Assignments) / +$70 (for Coursework) / +$35 (for Practice) / +$222 (for Thesis) — I'll explain each task and the entire solution process in detail."
     ),
     "explain_yes": "✅ Объяснения включены.\n✅ Explanations enabled.",
     "explain_no": "✅ Объяснения отключены.\n✅ Explanations disabled.",
     "explain_error": (
-        "Пожалуйста, нажмите «Да» или «Нет» на клавиатуре ниже.\n"
+        "Пожалуйста, нажмите «Да / Yes» или «Нет / No».\n"
         "Please press «Да / Yes» or «Нет / No»."
     ),
     "deadline_prompt": (
@@ -610,9 +615,6 @@ async def notify_admin_new_order(context, user, order, calc, paid, payment=None)
 def main() -> None:
     app = ApplicationBuilder().token(TOKEN).build()
 
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("cancel", cancel))
-
     conv_handler = ConversationHandler(
         entry_points=[],
         states={
@@ -629,12 +631,27 @@ def main() -> None:
         allow_reentry=False,
     )
 
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("cancel", cancel))
     app.add_handler(conv_handler)
     app.add_handler(PreCheckoutQueryHandler(precheckout_handler))
     app.add_error_handler(error_handler)
 
+    WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+    if not WEBHOOK_URL:
+        logger.error("Переменная окружения WEBHOOK_URL не установлена. Webhook не будет настроен.")
+        return
+
+    PORT = int(os.getenv("PORT", 8000))
+
     logger.info("Bot started")
-    app.run_polling()
+    app.run_webhook(
+        listen="0.0.0.0",
+        port=PORT,
+        url_path="/webhook",
+        webhook_url=WEBHOOK_URL,
+        drop_pending_updates=True,
+    )
 
 if __name__ == "__main__":
     main()
