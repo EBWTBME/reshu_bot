@@ -615,8 +615,13 @@ async def notify_admin_new_order(context, user, order, calc, paid, payment=None)
 def main() -> None:
     app = ApplicationBuilder().token(TOKEN).build()
 
+    # --- Обработчики ---
+    # ВАЖНО: /start и /cancel добавляются отдельно, чтобы они *всегда* сбрасывали user_data
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("cancel", cancel))
+
     conv_handler = ConversationHandler(
-        entry_points=[],
+        entry_points=[],  # Не добавляем /start или /cancel сюда
         states={
             TYPE_CHOICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, type_choice)],
             SEND_FILE: [MessageHandler((filters.Document.ALL | filters.PHOTO | filters.TEXT) & ~filters.COMMAND, send_file)],
@@ -627,31 +632,32 @@ def main() -> None:
             PAYMENT: [MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment_handler)],
             WAITING_FOR_RECEIPT: [MessageHandler(filters.ChatType.PRIVATE & ~filters.COMMAND, waiting_for_receipt)],
         },
-        fallbacks=[],
+        fallbacks=[],  # /start и /cancel обрабатываются глобально
         allow_reentry=False,
     )
 
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("cancel", cancel))
     app.add_handler(conv_handler)
     app.add_handler(PreCheckoutQueryHandler(precheckout_handler))
     app.add_error_handler(error_handler)
 
-    WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+    # --- Webhook ---
+    WEBHOOK_URL = os.getenv("https://reshubot-production.up.railway.app/webhook")  # Пример: https://reshubot-production.up.railway.app/webhook
     if not WEBHOOK_URL:
         logger.error("Переменная окружения WEBHOOK_URL не установлена. Webhook не будет настроен.")
         return
 
-    PORT = int(os.getenv("PORT", 8000))
+    # Используем PORT от Railway
+    port = int(os.getenv("PORT", 8000))
 
-    logger.info("Bot started")
+    logger.info(f"Запуск webhook на {WEBHOOK_URL}, порт {port}")
     app.run_webhook(
-        listen="0.0.0.0",
-        port=PORT,
-        url_path="/webhook",
-        webhook_url=WEBHOOK_URL,
-        drop_pending_updates=True,
+        listen="0.0.0.0",  # Слушаем все IP
+        port=port,         # Порт от Railway
+        url_path="/webhook", # Путь, по которому Telegram стучится
+        webhook_url=WEBHOOK_URL, # Полный URL, куда Telegram отправляет
+        drop_pending_updates=True, # Сбросить старые обновления
     )
-
+    
 if __name__ == "__main__":
     main()
+
