@@ -657,7 +657,5 @@ def main() -> None:
         webhook_url=WEBHOOK_URL, # Полный URL, куда Telegram отправляет
         drop_pending_updates=True, # Сбросить старые обновления
     )
-    
-if __name__ == "__main__":
-    main()
+
 
