@@ -24,7 +24,7 @@ from telegram.ext import (
 )
 
 # --- Настройки ---
-TOKEN = os.getenv("TG_BOT_TOKEN", "8305490732:AAHTnW4M3pUuEXKXj3OZ9840ZfAHUA_ADy4")
+TOKEN = os.getenv("TG_BOT_TOKEN", "8305490732:AAHhV5MceF35nmbGjvC23tajpWOY1zrYspg")
 ADMIN_CHAT_ID = int(os.getenv("ADMIN_CHAT_ID", "888140003"))
 PAYMENTS_PROVIDER_TOKEN = os.getenv("PAYMENTS_PROVIDER_TOKEN", "")
 CURRENCY = "RUB"
@@ -605,4 +605,5 @@ def main() -> None:
     app.run_polling()
 
 if __name__ == "__main__":
+
     main()
