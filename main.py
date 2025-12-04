@@ -22,8 +22,8 @@ from telegram.ext import (
     CallbackQueryHandler,
     PreCheckoutQueryHandler,
 )
+from telegram.error import Forbidden, TelegramError
 
-# --- Настройки ---
 TOKEN = os.getenv("TG_BOT_TOKEN", "8305490732:AAHhV5MceF35nmbGjvC23tajpWOY1zrYspg")
 ADMIN_CHAT_ID = int(os.getenv("ADMIN_CHAT_ID", "888140003"))
 PAYMENTS_PROVIDER_TOKEN = os.getenv("PAYMENTS_PROVIDER_TOKEN", "")
@@ -32,21 +32,18 @@ CURRENCY = "RUB"
 EMOJI_PRIMARY = "🔵"
 EMOJI_SECONDARY = "⚪️"
 
-# --- Логирование ---
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
 
-# Подавляем логи httpx
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
 from warnings import filterwarnings
 from telegram.warnings import PTBUserWarning
 filterwarnings(action="ignore", message=r".*CallbackQueryHandler", category=PTBUserWarning)
 
-# --- Состояния ---
 (
     TYPE_CHOICE,
     SEND_FILE,
@@ -58,7 +55,6 @@ filterwarnings(action="ignore", message=r".*CallbackQueryHandler", category=PTBU
     WAITING_FOR_RECEIPT,
 ) = range(8)
 
-# --- Цены в RUB (указываются вручную) ---
 BASE_PRICES = {
     "Задание": 249,
     "Лабораторная/Контрольная": 999,
@@ -68,10 +64,9 @@ BASE_PRICES = {
     "Дипломная": 25999,
 }
 
-# --- Цены в USD (указываются вручную) ---
 BASE_PRICES_USD = {
     "Задание": 3,
-    "Лабораторная/Контрольная":10,
+    "Лабораторная/Контрольная": 10,
     "Экзаменационный вопрос": 10,
     "Практика": 59,
     "Курсовая": 99,
@@ -87,9 +82,12 @@ EXPLAIN_SURCHARGES = {
 
 EXPLAIN_SURCHARGES_USD = {
     "default": 19,
-    "Coursework": 59,
-    "Thesis": 159,
-    "Practice": 29,
+    "Курсовая": 59,
+    "Дипломная": 159,
+    "Практика": 29,
+    "Задание": 19,
+    "Лабораторная/Контрольная": 19,
+    "Экзаменационный вопрос": 19,
 }
 
 WORK_TYPES_TRANSLATIONS = {
@@ -106,7 +104,6 @@ def urgency_surcharge(days: int) -> int:
     return max(val, 0)
 
 def urgency_surcharge_usd(days: int) -> int:
-    # Пример: 12$ за последний день, шаг - 1$
     val = 12 - (days - 1)
     return max(val, 0)
 
@@ -180,7 +177,6 @@ def parse_choice_text(text: str) -> str:
         clean = clean.split(" / ")[0]
     return clean
 
-# --- Локализованные строки ---
 PHRASES = {
     "start_welcome": (
         f"{EMOJI_PRIMARY} <b>Решу МФЮА / I'll Solve Your Assignments</b>\n\n"
@@ -313,8 +309,40 @@ PHRASES = {
     ),
 }
 
-# --- Хендлеры ---
+async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update is not None:
+        logger.error(f"Ошибка при обработке обновления {update.update_id}: {context.error}")
+    else:
+        logger.error(f"Ошибка вне обновления: {context.error}")
+
+    if isinstance(context.error, Forbidden):
+        if "bot was blocked by the user" in context.error.message:
+            user_id = update.effective_user.id if update.effective_user else "Unknown"
+            logger.info(f"Бот был заблокирован пользователем ID: {user_id}")
+            if update.effective_user and context.user_data:
+                context.user_data.clear()
+            return
+        elif "user is deactivated" in context.error.message:
+            user_id = update.effective_user.id if update.effective_user else "Unknown"
+            logger.info(f"Аккаунт пользователя ID: {user_id} деактивирован.")
+            if update.effective_user and context.user_data:
+                context.user_data.clear()
+            return
+        elif "chat not found" in context.error.message:
+            chat_id = update.effective_chat.id if update.effective_chat else "Unknown"
+            logger.info(f"Чат с ID: {chat_id} не найден.")
+            if update.effective_user and context.user_data:
+                context.user_data.clear()
+            return
+
+    if isinstance(context.error, TelegramError):
+        logger.warning(f"Telegram ошибка: {context.error}")
+        return
+
+    logger.error(f"Произошла непредвиденная ошибка: {context.error}", exc_info=True)
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data.clear()
     await update.message.reply_html(PHRASES["start_welcome"])
     types = list(BASE_PRICES.keys())
     await update.message.reply_text(PHRASES["start_types"], reply_markup=make_reply_markup(types))
@@ -495,7 +523,7 @@ async def confirm_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         except Exception as e:
             logger.exception("Ошибка отправки инвойса")
 
-    card_number = "2200 7013 9298 5914"  # ← ЗАМЕНИ НА СВОЙ!
+    card_number = "2200 7013 9298 5914"
     payment_text = PHRASES["payment_prompt"].format(total_rub=total_rub, total_usd=total_usd, card_number=card_number)
     await query.edit_message_text(payment_text, parse_mode="HTML")
     return WAITING_FOR_RECEIPT
@@ -582,8 +610,11 @@ async def notify_admin_new_order(context, user, order, calc, paid, payment=None)
 def main() -> None:
     app = ApplicationBuilder().token(TOKEN).build()
 
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("cancel", cancel))
+
     conv_handler = ConversationHandler(
-        entry_points=[CommandHandler("start", start)],
+        entry_points=[],
         states={
             TYPE_CHOICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, type_choice)],
             SEND_FILE: [MessageHandler((filters.Document.ALL | filters.PHOTO | filters.TEXT) & ~filters.COMMAND, send_file)],
@@ -594,16 +625,16 @@ def main() -> None:
             PAYMENT: [MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment_handler)],
             WAITING_FOR_RECEIPT: [MessageHandler(filters.ChatType.PRIVATE & ~filters.COMMAND, waiting_for_receipt)],
         },
-        fallbacks=[CommandHandler("cancel", cancel)],
+        fallbacks=[],
         allow_reentry=False,
     )
 
     app.add_handler(conv_handler)
     app.add_handler(PreCheckoutQueryHandler(precheckout_handler))
+    app.add_error_handler(error_handler)
 
     logger.info("Bot started")
     app.run_polling()
 
 if __name__ == "__main__":
-
     main()
