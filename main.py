@@ -393,30 +393,28 @@ async def send_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if update.message.text and ("отмен" in update.message.text.lower() or "❌" in update.message.text):
         return await cancel(update, context)
     
+    # Сохраняем информацию о задании для отправки позже
     if update.message.document:
         file_id = update.message.document.file_id
+        file_type = "document"
         caption_text = update.message.caption or ""
-        full_caption = f"{caption_for_admin}\n\n📝 Подпись: {caption_text}" if caption_text else caption_for_admin
-        
-        # Отправляем админу
-        try:
-            await context.bot.send_document(ADMIN_CHAT_ID, document=file_id, caption=full_caption[:1024])
-        except Exception as e:
-            logger.error(f"Ошибка отправки документа админу: {e}")
-        
+        context.user_data["order"]["assignment"] = {
+            "type": "document",
+            "file_id": file_id,
+            "caption": caption_text,
+            "full_caption": f"{caption_for_admin}\n\n📝 Подпись: {caption_text}" if caption_text else caption_for_admin
+        }
         await update.message.reply_text(PHRASES["file_received"])
         
     elif update.message.photo:
         file_id = update.message.photo[-1].file_id
         caption_text = update.message.caption or ""
-        full_caption = f"{caption_for_admin}\n\n📝 Подпись: {caption_text}" if caption_text else caption_for_admin
-        
-        # Отправляем админу
-        try:
-            await context.bot.send_photo(ADMIN_CHAT_ID, photo=file_id, caption=full_caption[:1024])
-        except Exception as e:
-            logger.error(f"Ошибка отправки фото админу: {e}")
-        
+        context.user_data["order"]["assignment"] = {
+            "type": "photo",
+            "file_id": file_id,
+            "caption": caption_text,
+            "full_caption": f"{caption_for_admin}\n\n📝 Подпись: {caption_text}" if caption_text else caption_for_admin
+        }
         await update.message.reply_text(PHRASES["photo_received"])
         
     elif update.message.text:
@@ -424,15 +422,11 @@ async def send_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         if "отмен" in update.message.text.lower() or "❌" in update.message.text:
             return await cancel(update, context)
         
-        # Отправляем админу
-        try:
-            await context.bot.send_message(
-                ADMIN_CHAT_ID, 
-                text=f"{caption_for_admin}:\n\n{update.message.text}"
-            )
-        except Exception as e:
-            logger.error(f"Ошибка отправки текста админу: {e}")
-        
+        context.user_data["order"]["assignment"] = {
+            "type": "text",
+            "content": update.message.text,
+            "full_caption": f"{caption_for_admin}:\n\n{update.message.text}"
+        }
         await update.message.reply_text(PHRASES["text_received"])
         
     else:
@@ -575,9 +569,6 @@ async def confirm_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     total_rub = calc["total_rub"]
     total_usd = calc["total_usd"]
     
-    # Уведомляем админа о новом заказе
-    await notify_admin_new_order(context, update.effective_user, order, calc, paid=False)
-    
     # Пытаемся использовать Telegram Payments
     provider_token = PAYMENTS_PROVIDER_TOKEN.strip()
     if provider_token:
@@ -617,8 +608,8 @@ async def successful_payment_handler(update: Update, context: ContextTypes.DEFAU
     order = context.user_data.get("order", {})
     calc = calculate_price(order)
     
-    # Уведомляем админа об оплате
-    await notify_admin_new_order(
+    # Уведомляем админа об оплате и отправляем задание
+    await notify_admin_with_assignment(
         context, user, order, calc, 
         paid=True, 
         payment=update.message.successful_payment
@@ -651,7 +642,7 @@ async def waiting_for_receipt(update: Update, context: ContextTypes.DEFAULT_TYPE
         caption = f"📸 Чек от {user.full_name} (@{user.username} | id={user.id})"
         
         try:
-            # Отправляем админу
+            # Отправляем админу чек
             if update.message.photo:
                 await context.bot.send_photo(
                     ADMIN_CHAT_ID, 
@@ -665,11 +656,11 @@ async def waiting_for_receipt(update: Update, context: ContextTypes.DEFAULT_TYPE
                     caption=caption
                 )
             
-            # Уведомляем админа о заказе
+            # Уведомляем админа о заказе (оплаченном) и отправляем задание
             order = context.user_data.get("order", {})
             if order:
                 calc = calculate_price(order)
-                await notify_admin_new_order(context, user, order, calc, paid=True)
+                await notify_admin_with_assignment(context, user, order, calc, paid=True)
             
             # Показываем клавиатуру с /start
             keyboard = [[KeyboardButton("/start")]]
@@ -698,8 +689,30 @@ async def waiting_for_receipt(update: Update, context: ContextTypes.DEFAULT_TYPE
     await update.message.reply_text(PHRASES["waiting_for_receipt_prompt"])
     return WAITING_FOR_RECEIPT
 
-async def notify_admin_new_order(context, user, order, calc, paid, payment=None):
-    """Отправка уведомления администратору"""
+async def notify_admin_with_assignment(context, user, order, calc, paid, payment=None):
+    """Отправка ОДНОГО общего уведомления админу с заданием и деталями заказа"""
+    # Сначала отправляем задание
+    assignment = order.get("assignment", {})
+    
+    if assignment.get("type") == "document":
+        await context.bot.send_document(
+            chat_id=ADMIN_CHAT_ID,
+            document=assignment["file_id"],
+            caption=assignment["full_caption"][:1024]
+        )
+    elif assignment.get("type") == "photo":
+        await context.bot.send_photo(
+            chat_id=ADMIN_CHAT_ID,
+            photo=assignment["file_id"],
+            caption=assignment["full_caption"][:1024]
+        )
+    elif assignment.get("type") == "text":
+        await context.bot.send_message(
+            chat_id=ADMIN_CHAT_ID,
+            text=assignment["full_caption"]
+        )
+    
+    # Теперь отправляем детали заказа
     lines = [
         "<b>Новый заказ / New Order</b>",
         f"Клиент / Client: {user.full_name} (@{user.username}) id={user.id}",
@@ -742,7 +755,7 @@ async def notify_admin_new_order(context, user, order, calc, paid, payment=None)
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup(keyboard) if keyboard else None
         )
-        logger.info(f"Уведомление админу отправлено: {user.full_name}")
+        logger.info(f"Общее уведомление админу отправлено: {user.full_name}")
     except Exception as e:
         logger.error(f"Не удалось уведомить администратора: {e}")
 
