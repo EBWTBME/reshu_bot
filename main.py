@@ -26,14 +26,13 @@ from telegram.ext import (
 from telegram.error import Forbidden, TelegramError
 
 # ========== КОНФИГУРАЦИЯ ==========
-# Получаем токен из переменных окружения
 TOKEN = os.getenv("TG_BOT_TOKEN")
 if not TOKEN:
     raise ValueError("❌ TG_BOT_TOKEN не установлен! Установите переменную окружения.")
 
 ADMIN_CHAT_ID = int(os.getenv("ADMIN_CHAT_ID", "888140003"))
 PAYMENTS_PROVIDER_TOKEN = os.getenv("PAYMENTS_PROVIDER_TOKEN", "")
-CURRENCY = "RUB"
+CURRENCY = "RUB"  # Для Telegram Payments всё ещё в рублях
 
 EMOJI_PRIMARY = "🔵"
 EMOJI_SECONDARY = "⚪️"
@@ -57,7 +56,7 @@ logger = logging.getLogger(__name__)
     WAITING_FOR_RECEIPT,
 ) = range(8)
 
-# ========== ЦЕНЫ ==========
+# ========== ЦЕНЫ В РУБЛЯХ ==========
 BASE_PRICES = {
     "Задание": 299,
     "Лабораторная/Контрольная": 999,
@@ -69,24 +68,18 @@ BASE_PRICES = {
     "Презентация для диплома": 4999,
 }
 
-BASE_PRICES_USD = {
-    "Задание": 2.99,
-    "Лабораторная/Контрольная": 9.99,
-    "Экзаменационный вопрос": 9.99,
-    "Практика": 49,
-    "Курсовая": 99,
-    "Дипломная": 259,
-    "Презентация для курсовой": 19,
-    "Презентация для диплома": 49,
-}
+# ========== ЦЕНЫ В ЕВРО (фиксированный курс 1 EUR = 100 RUB) ==========
+BASE_PRICES_EUR = {k: v // 100 for k, v in BASE_PRICES.items()}
 
-EXPLAIN_SURCHARGES = {
+# ========== ДОПЛАТА ЗА ОБЪЯСНЕНИЯ (в рублях) ==========
+EXPLAIN_SURCHARGGES = {
     "default": 2999,
     "Курсовая": 5999,
     "Дипломная": 15999,
     "Практика": 1999,
 }
 
+# ========== ПЕРЕВОДЫ ТИПОВ РАБОТ ==========
 WORK_TYPES_TRANSLATIONS = {
     "Задание": "Assignment",
     "Лабораторная/Контрольная": "Lab / Quiz",
@@ -98,21 +91,16 @@ WORK_TYPES_TRANSLATIONS = {
     "Презентация для диплома": "Presentation for Thesis",
 }
 
-# ========== ГЕНЕРАЦИЯ ПРАЙС-ЛИСТА ==========
+# ========== ГЕНЕРАЦИЯ ПРАЙС-ЛИСТА (RUB / EUR) ==========
 price_lines = []
 for work_type, rub_price in BASE_PRICES.items():
     en_type = WORK_TYPES_TRANSLATIONS.get(work_type, work_type)
-    usd_price = BASE_PRICES_USD.get(work_type, 0)
-    # Округляем USD до 2 знаков для красоты (хотя в BASE_PRICES_USD уже float)
-    usd_price = round(usd_price, 2)
-    price_lines.append(f"• {work_type} — {rub_price}₽ / ${usd_price} ({en_type})")
+    eur_price = BASE_PRICES_EUR[work_type]
+    price_lines.append(f"• {work_type} — {rub_price}₽ / {eur_price}€ ({en_type})")
 
 price_list_text = "\n".join(price_lines)
 
 # ========== ФУНКЦИИ ==========
-def format_price_rub_usd(rub: int, usd: int) -> str:
-    return f"{rub}₽ / ${usd}"
-
 def calculate_price(selection: Dict[str, Any]) -> Dict[str, Any]:
     t = selection["type"]
     explain = selection.get("explain", False)
@@ -120,36 +108,37 @@ def calculate_price(selection: Dict[str, Any]) -> Dict[str, Any]:
     extra_count = int(selection.get("extra_count", 1))
 
     breakdown_rub = []
-    breakdown_usd = []
+    breakdown_eur = []
     total_rub = 0
-    total_usd = 0
+    total_eur = 0
 
     if t in ("Задание", "Лабораторная/Контрольная", "Экзаменационный вопрос"):
         base_rub = BASE_PRICES[t] * extra_count
-        base_usd = BASE_PRICES_USD[t] * extra_count
+        base_eur = BASE_PRICES_EUR[t] * extra_count
         en_name = WORK_TYPES_TRANSLATIONS[t]
         breakdown_rub.append(f"{t} — {BASE_PRICES[t]}₽ × {extra_count} = {base_rub}₽")
-        breakdown_usd.append(f"{en_name} — ${BASE_PRICES_USD[t]} × {extra_count} = ${base_usd}")
+        breakdown_eur.append(f"{en_name} — {BASE_PRICES_EUR[t]}€ × {extra_count} = {base_eur}€")
         total_rub += base_rub
-        total_usd += base_usd
+        total_eur += base_eur
     else:
         base_rub = BASE_PRICES[t]
-        base_usd = BASE_PRICES_USD[t]
+        base_eur = BASE_PRICES_EUR[t]
         en_name = WORK_TYPES_TRANSLATIONS[t]
         breakdown_rub.append(f"{t} = {base_rub}₽")
-        breakdown_usd.append(f"{en_name} = ${base_usd}")
+        breakdown_eur.append(f"{en_name} = {base_eur}€")
         total_rub += base_rub
-        total_usd += base_usd
+        total_eur += base_eur
 
     if explain:
-        surcharge_rub = EXPLAIN_SURCHARGES.get(t, EXPLAIN_SURCHARGES["default"])
-        surcharge_usd = round(surcharge_rub / 90)
+        surcharge_rub = EXPLAIN_SURCHARGGES.get(t, EXPLAIN_SURCHARGGES["default"])
+        surcharge_eur = surcharge_rub // 100
         breakdown_rub.append(f"За объяснения = +{surcharge_rub}₽")
-        breakdown_usd.append(f"For explanations = +${surcharge_usd}")
+        breakdown_eur.append(f"For explanations = +{surcharge_eur}€")
         total_rub += surcharge_rub
-        total_usd += surcharge_usd
+        total_eur += surcharge_eur
 
     urgency_rub = 0
+    urgency_eur = 0
     if days > 0:
         if t in ("Задание", "Лабораторная/Контрольная"):
             urgency_rub = max(1500 - 100 * (days - 1), 0)
@@ -166,25 +155,26 @@ def calculate_price(selection: Dict[str, Any]) -> Dict[str, Any]:
             urgency_rub = max(urgency_val, base) - base
 
         urgency_rub = int(max(urgency_rub, 0))
-        urgency_usd = round(urgency_rub / 90)
+        urgency_eur = urgency_rub // 100
+
         if urgency_rub > 0:
             breakdown_rub.append(f"Срочность ({days} дн) = +{urgency_rub}₽")
-            breakdown_usd.append(f"Urgency ({days} days) = +${urgency_usd}")
+            breakdown_eur.append(f"Urgency ({days} days) = +{urgency_eur}€")
             total_rub += urgency_rub
-            total_usd += urgency_usd
+            total_eur += urgency_eur
         else:
             breakdown_rub.append(f"Срочность ({days} дн) = +0₽")
-            breakdown_usd.append(f"Urgency ({days} days) = +$0")
+            breakdown_eur.append(f"Urgency ({days} days) = +0€")
     else:
         if days == 0:
             breakdown_rub.append("Срочность = +0₽")
-            breakdown_usd.append("Urgency = +$0")
+            breakdown_eur.append("Urgency = +0€")
 
     return {
         "total_rub": total_rub,
-        "total_usd": total_usd,
+        "total_eur": total_eur,
         "breakdown_rub": breakdown_rub,
-        "breakdown_usd": breakdown_usd,
+        "breakdown_eur": breakdown_eur,
     }
 
 def make_reply_markup(options: list, include_cancel=True) -> ReplyKeyboardMarkup:
@@ -197,24 +187,16 @@ def make_reply_markup(options: list, include_cancel=True) -> ReplyKeyboardMarkup
     return ReplyKeyboardMarkup(buttons, one_time_keyboard=True, resize_keyboard=True)
 
 def parse_choice_text(text: str) -> str:
-    """Извлекает русское название из текста кнопки"""
     if not text:
         return ""
-    
-    # Убираем эмодзи в начале
     clean = text.strip()
-    if clean.startswith(EMOJI_PRIMARY):
-        clean = clean[len(EMOJI_PRIMARY):].strip()
-    elif clean.startswith(EMOJI_SECONDARY):
-        clean = clean[len(EMOJI_SECONDARY):].strip()
-    
-    # Разделяем русскую и английскую части
+    if clean.startswith(EMOJI_PRIMARY) or clean.startswith(EMOJI_SECONDARY):
+        clean = clean[1:].strip()
     if " / " in clean:
         clean = clean.split(" / ")[0].strip()
-    
     return clean
 
-# ========== ТЕКСТЫ СООБЩЕНИЙ ==========
+# ========== ТЕКСТЫ СООБЩЕНИЙ (ВСЕ В ЕВРО) ==========
 PHRASES = {
     "start_welcome": (
         f"{EMOJI_PRIMARY} <b>Заходи за решением! / Come in for a solution!</b>\n\n"
@@ -240,9 +222,9 @@ PHRASES = {
     ),
     "explain_prompt": (
         "Нужны ли подробные объяснения каждого шага решения?\n"
-        "За +2999₽ (за задания) / +5999₽ (за Курсовую) / +2999₽ (за Практику) / +20000₽ (за Дипломную) — я подробно объясню каждое задание и весь ход решения.\n\n"
+        "За +2999₽ (за задания) / +5999₽ (за Курсовую) / +1999₽ (за Практику) / +15999₽ (за Дипломную) — я подробно объясню каждое задание и весь ход решения.\n\n"
         "Need detailed explanations?\n"
-        "For +$35 (for Assignments) / +$70 (for Coursework) / +$35 (for Practice) / +$222 (for Thesis) — I'll explain each task and the entire solution process in detail."
+        "For +30€ (Assignments) / +60€ (Coursework) / +20€ (Practice) / +160€ (Thesis) — I'll explain each task and the entire solution process in detail."
     ),
     "explain_yes": "✅ Объяснения включены.\n✅ Explanations enabled.",
     "explain_no": "✅ Объяснения отключены.\n✅ Explanations disabled.",
@@ -268,20 +250,20 @@ PHRASES = {
         "{extra_count_line}"
         "\n<b>Детализация / Breakdown:</b>\n"
         "{breakdown_rub}\n"
-        "{breakdown_usd}\n"
-        "\n<b>Итого / Total: {total_rub}₽ / ${total_usd}</b>"
+        "{breakdown_eur}\n"
+        "\n<b>Итого / Total: {total_rub}₽ / {total_eur}€</b>"
     ),
     "confirm_button": "✅ Подтвердить и оплатить / Confirm & Pay",
     "cancel_button": "❌ Отменить заказ / Cancel Order",
     "payment_prompt": (
         "✅ Оплата заказа:\n\n"
-        "<b>Переведите {total_rub} ₽ / ${total_usd}</b> на карту:\n"
-        "<code>{card_number}</code>\n\n"
+        "<b>Переведите {total_rub} ₽ ({total_eur}€)</b> на карту:\n"
+        "<code>2200 7013 9298 5914</code>\n\n"
         "⚠️ После оплаты отправьте сюда <b>скриншот чека</b> (фото или документ) — я уведомлю администратора, и заказ будет подтверждён.\n\n"
         "❗ Срок выполнения начинается с момента получения чека.\n\n"
         "✅ Payment:\n\n"
-        "<b>Transfer {total_rub} ₽ / ${total_usd}</b> to card:\n"
-        "<code>{card_number}</code>\n\n"
+        "<b>Transfer {total_rub} ₽ ({total_eur}€)</b> to card:\n"
+        "<code>2200 7013 9298 5914</code>\n\n"
         "⚠️ After payment, send a <b>screenshot</b> (photo/document) — I'll notify admin, and order will be confirmed.\n\n"
         "❗ Deadline starts when payment is confirmed."
     ),
@@ -329,143 +311,88 @@ PHRASES = {
     ),
 }
 
-# ========== ОБРАБОТЧИКИ ОШИБОК ==========
+# ========== ОБРАБОТЧИКИ ==========
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.error(f"Ошибка: {context.error}", exc_info=True)
 
-# ========== ОСНОВНЫЕ ОБРАБОТЧИКИ ==========
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Начало разговора - выбор типа работы"""
     logger.info(f"Команда /start от {update.effective_user.username}")
-    
-    # Очищаем предыдущие данные
     context.user_data.clear()
     context.user_data["order"] = {}
-    
     await update.message.reply_html(PHRASES["start_welcome"])
-    
-    # Показываем типы работ
     types = list(BASE_PRICES.keys())
-    await update.message.reply_text(
-        PHRASES["start_types"], 
-        reply_markup=make_reply_markup(types)
-    )
-    
+    await update.message.reply_text(PHRASES["start_types"], reply_markup=make_reply_markup(types))
     return TYPE_CHOICE
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Отмена заказа"""
     context.user_data.clear()
     await update.message.reply_text(PHRASES["cancel_order"])
     return ConversationHandler.END
 
 async def type_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Обработка выбора типа работы"""
     user_text = update.message.text
-    logger.info(f"Пользователь выбрал: {user_text}")
-    
-    # Проверка на отмену
     if "отмен" in user_text.lower() or "❌" in user_text:
         return await cancel(update, context)
-    
-    # Парсим выбор
     text = parse_choice_text(user_text)
-    
-    # Проверяем, что выбран допустимый тип
     if text not in BASE_PRICES:
-        logger.warning(f"Неизвестный тип: {text}")
         await update.message.reply_text(PHRASES["invalid_input"])
         return TYPE_CHOICE
-    
-    # Сохраняем выбор
     context.user_data["order"]["type"] = text
-    en_text = WORK_TYPES_TRANSLATIONS.get(text, text)
-    
+    en_text = WORK_TYPES_TRANSLATIONS[text]
     await update.message.reply_text(
         PHRASES["type_chosen"].format(ru=text, en=en_text),
-        reply_markup=ReplyKeyboardMarkup(
-            [[KeyboardButton("❌ Отменить заказ / Cancel order")]], 
-            one_time_keyboard=True, 
-            resize_keyboard=True
-        ),
+        reply_markup=ReplyKeyboardMarkup([[KeyboardButton("❌ Отменить заказ / Cancel order")]], resize_keyboard=True),
         parse_mode="HTML"
     )
-    
-    # Просим прислать задание
     await update.message.reply_text(PHRASES["send_file_prompt"], parse_mode="HTML")
-    
     return SEND_FILE
 
 async def send_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Обработка отправки файла/фото/текста задания"""
     user = update.effective_user
     caption_for_admin = f"📩 Задание от {user.full_name} (@{user.username} | id={user.id})"
-    
-    # Проверка на отмену
     if update.message.text and ("отмен" in update.message.text.lower() or "❌" in update.message.text):
         return await cancel(update, context)
-    
-    # Сохраняем информацию о задании для отправки позже
+
     if update.message.document:
-        file_id = update.message.document.file_id
-        file_type = "document"
-        caption_text = update.message.caption or ""
         context.user_data["order"]["assignment"] = {
             "type": "document",
-            "file_id": file_id,
-            "caption": caption_text,
-            "full_caption": f"{caption_for_admin}\n\n📝 Подпись: {caption_text}" if caption_text else caption_for_admin
+            "file_id": update.message.document.file_id,
+            "caption": update.message.caption or "",
+            "full_caption": f"{caption_for_admin}\n\n📝 Подпись: {update.message.caption}" if update.message.caption else caption_for_admin
         }
         await update.message.reply_text(PHRASES["file_received"])
-        
     elif update.message.photo:
-        file_id = update.message.photo[-1].file_id
-        caption_text = update.message.caption or ""
         context.user_data["order"]["assignment"] = {
             "type": "photo",
-            "file_id": file_id,
-            "caption": caption_text,
-            "full_caption": f"{caption_for_admin}\n\n📝 Подпись: {caption_text}" if caption_text else caption_for_admin
+            "file_id": update.message.photo[-1].file_id,
+            "caption": update.message.caption or "",
+            "full_caption": f"{caption_for_admin}\n\n📝 Подпись: {update.message.caption}" if update.message.caption else caption_for_admin
         }
         await update.message.reply_text(PHRASES["photo_received"])
-        
     elif update.message.text:
-        # Проверка на отмену для текста
-        if "отмен" in update.message.text.lower() or "❌" in update.message.text:
-            return await cancel(update, context)
-        
         context.user_data["order"]["assignment"] = {
             "type": "text",
             "content": update.message.text,
             "full_caption": f"{caption_for_admin}:\n\n{update.message.text}"
         }
         await update.message.reply_text(PHRASES["text_received"])
-        
     else:
         await update.message.reply_text(PHRASES["send_file_error"])
         return SEND_FILE
-    
-    # Сохраняем факт получения файла
-    context.user_data["order"]["file"] = True
-    
-    # Спрашиваем про объяснения
+
     kb = ReplyKeyboardMarkup(
         [
             [KeyboardButton(f"{EMOJI_PRIMARY} Да / Yes"), KeyboardButton(f"{EMOJI_SECONDARY} Нет / No")],
             [KeyboardButton("❌ Отменить заказ / Cancel order")]
         ],
-        one_time_keyboard=True, 
-        resize_keyboard=True
+        resize_keyboard=True, one_time_keyboard=True
     )
     await update.message.reply_text(PHRASES["explain_prompt"], reply_markup=kb)
-    
     return EXPLAIN_CHOICE
 
 async def explain_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Обработка выбора объяснений"""
     if "отмен" in update.message.text.lower() or "❌" in update.message.text:
         return await cancel(update, context)
-    
     text = update.message.text.lower()
     if "да" in text or "yes" in text:
         context.user_data["order"]["explain"] = True
@@ -476,16 +403,12 @@ async def explain_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     else:
         await update.message.reply_text(PHRASES["explain_error"])
         return EXPLAIN_CHOICE
-    
-    # Спрашиваем срок
     await update.message.reply_text(PHRASES["deadline_prompt"])
     return DEADLINE_CHOICE
 
 async def deadline_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Обработка срока выполнения"""
     if "отмен" in update.message.text.lower() or "❌" in update.message.text:
         return await cancel(update, context)
-    
     try:
         days = int(update.message.text.strip())
         if days < 1:
@@ -494,20 +417,16 @@ async def deadline_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     except (ValueError, AttributeError):
         await update.message.reply_text(PHRASES["invalid_days"])
         return DEADLINE_CHOICE
-    
-    # Для некоторых типов работ нужны дополнительные параметры
-    t = context.user_data["order"]["type"]
-    if t in ("Задание", "Лабораторная/Контрольная", "Экзаменационный вопрос"):
+
+    if context.user_data["order"]["type"] in ("Задание", "Лабораторная/Контрольная", "Экзаменационный вопрос"):
         await update.message.reply_text(PHRASES["extra_params_prompt"])
         return EXTRA_PARAMS
     else:
         return await show_confirmation(update, context)
 
 async def extra_params(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Обработка дополнительных параметров"""
     if "отмен" in update.message.text.lower() or "❌" in update.message.text:
         return await cancel(update, context)
-    
     try:
         count = int(update.message.text.strip())
         if count < 1:
@@ -516,72 +435,53 @@ async def extra_params(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     except (ValueError, AttributeError):
         await update.message.reply_text(PHRASES["invalid_count"])
         return EXTRA_PARAMS
-    
     return await show_confirmation(update, context)
 
 async def show_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Показ подтверждения заказа"""
     order = context.user_data.get("order", {})
-    
-    # Устанавливаем значение по умолчанию для extra_count
     if "extra_count" not in order:
         order["extra_count"] = 1
-    
-    # Рассчитываем цену
+
     calc = calculate_price(order)
     total_rub = calc["total_rub"]
-    total_usd = calc["total_usd"]
+    total_eur = calc["total_eur"]
     breakdown_rub = "\n".join(calc["breakdown_rub"])
-    breakdown_usd = "\n".join(calc["breakdown_usd"])
-    
-    # Формируем строку с количеством заданий
+    breakdown_eur = "\n".join(calc["breakdown_eur"])
+
     extra_count_line = ""
     if order.get("type") in ("Задание", "Лабораторная/Контрольная", "Экзаменационный вопрос"):
-        extra_count_line = f"Количество заданий / Quantity: {order.get('extra_count')}\n"
-    
-    # Формируем текст подтверждения
+        extra_count_line = f"Количество заданий / Quantity: {order['extra_count']}\n"
+
     summary_text = PHRASES["confirmation_summary"].format(
-        type=order.get('type'),
+        type=order['type'],
         explain="Да" if order.get('explain') else "Нет",
-        days=order.get('days'),
+        days=order['days'],
         extra_count_line=extra_count_line,
         breakdown_rub=breakdown_rub,
-        breakdown_usd=breakdown_usd,
+        breakdown_eur=breakdown_eur,
         total_rub=total_rub,
-        total_usd=total_usd
+        total_eur=total_eur
     )
-    
-    # Создаем инлайн-кнопки
+
     buttons = [
         [InlineKeyboardButton(PHRASES["confirm_button"], callback_data="confirm_pay")],
         [InlineKeyboardButton(PHRASES["cancel_button"], callback_data="cancel")],
     ]
-    
-    await update.message.reply_html(
-        summary_text, 
-        reply_markup=InlineKeyboardMarkup(buttons)
-    )
-    
+    await update.message.reply_html(summary_text, reply_markup=InlineKeyboardMarkup(buttons))
     return CONFIRM_ORDER
 
 async def confirm_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Обработка инлайн-кнопок подтверждения"""
     query = update.callback_query
     await query.answer()
-    
-    # Отмена заказа
     if query.data == "cancel":
         context.user_data.clear()
         await query.edit_message_text(PHRASES["cancel_order"])
         return ConversationHandler.END
-    
-    # Подтверждение и переход к оплате
+
     order = context.user_data.get("order", {})
     calc = calculate_price(order)
     total_rub = calc["total_rub"]
-    total_usd = calc["total_usd"]
-    
-    # Пытаемся использовать Telegram Payments
+
     provider_token = PAYMENTS_PROVIDER_TOKEN.strip()
     if provider_token:
         try:
@@ -599,132 +499,68 @@ async def confirm_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             return PAYMENT
         except Exception as e:
             logger.exception("Ошибка отправки инвойса")
-    
-    # Если Telegram Payments не настроен, используем ручную оплату
-    card_number = "2200 7013 9298 5914"
+
     payment_text = PHRASES["payment_prompt"].format(
-        total_rub=total_rub, 
-        total_usd=total_usd, 
-        card_number=card_number
+        total_rub=total_rub,
+        total_eur=calc["total_eur"]
     )
     await query.edit_message_text(payment_text, parse_mode="HTML")
     return WAITING_FOR_RECEIPT
 
 async def precheckout_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Обработка предварительной проверки оплаты"""
     await update.pre_checkout_query.answer(ok=True)
 
 async def successful_payment_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Обработка успешной оплаты через Telegram Payments"""
     user = update.effective_user
     order = context.user_data.get("order", {})
     calc = calculate_price(order)
-    
-    # Уведомляем админа об оплате и отправляем задание
-    await notify_admin_with_assignment(
-        context, user, order, calc, 
-        paid=True, 
-        payment=update.message.successful_payment
-    )
-    
-    # Показываем клавиатуру с /start
+    await notify_admin_with_assignment(context, user, order, calc, paid=True)
+
     keyboard = [[KeyboardButton("/start")]]
-    reply_markup = ReplyKeyboardMarkup(
-        keyboard, 
-        resize_keyboard=True, 
-        one_time_keyboard=True
-    )
-    
-    await update.message.reply_text(
-        PHRASES["successful_payment"], 
-        reply_markup=reply_markup, 
-        parse_mode="HTML"
-    )
-    
-    # Очищаем данные
+    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
+    await update.message.reply_text(PHRASES["successful_payment"], reply_markup=reply_markup, parse_mode="HTML")
     context.user_data.clear()
     return ConversationHandler.END
 
 async def waiting_for_receipt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Обработка скриншота чека для ручной оплаты"""
     user = update.effective_user
-    
-    # Проверяем, что прислали фото или документ
     if update.message.photo or update.message.document:
         caption = f"📸 Чек от {user.full_name} (@{user.username} | id={user.id})"
-        
         try:
-            # Отправляем админу чек
             if update.message.photo:
-                await context.bot.send_photo(
-                    ADMIN_CHAT_ID, 
-                    photo=update.message.photo[-1].file_id, 
-                    caption=caption
-                )
+                await context.bot.send_photo(ADMIN_CHAT_ID, photo=update.message.photo[-1].file_id, caption=caption)
             elif update.message.document:
-                await context.bot.send_document(
-                    ADMIN_CHAT_ID, 
-                    document=update.message.document.file_id, 
-                    caption=caption
-                )
-            
-            # Уведомляем админа о заказе (оплаченном) и отправляем задание
+                await context.bot.send_document(ADMIN_CHAT_ID, document=update.message.document.file_id, caption=caption)
+
             order = context.user_data.get("order", {})
             if order:
                 calc = calculate_price(order)
                 await notify_admin_with_assignment(context, user, order, calc, paid=True)
-            
-            # Показываем клавиатуру с /start
+
             keyboard = [[KeyboardButton("/start")]]
-            reply_markup = ReplyKeyboardMarkup(
-                keyboard, 
-                resize_keyboard=True, 
-                one_time_keyboard=True
-            )
-            
-            await update.message.reply_text(
-                PHRASES["receipt_received"], 
-                reply_markup=reply_markup, 
-                parse_mode="HTML"
-            )
-            
+            reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
+            await update.message.reply_text(PHRASES["receipt_received"], reply_markup=reply_markup, parse_mode="HTML")
+
         except Exception as e:
             logger.error(f"Ошибка при пересылке чека: {e}")
             await update.message.reply_text("❌ Не удалось передать скриншот. Попробуйте ещё раз.")
             return WAITING_FOR_RECEIPT
-        
-        # Очищаем данные
+
         context.user_data.clear()
         return ConversationHandler.END
-    
-    # Если прислали не фото/документ
+
     await update.message.reply_text(PHRASES["waiting_for_receipt_prompt"])
     return WAITING_FOR_RECEIPT
 
 async def notify_admin_with_assignment(context, user, order, calc, paid, payment=None):
-    """Отправка ОДНОГО общего уведомления админу с заданием и деталями заказа"""
-    # Сначала отправляем задание
     assignment = order.get("assignment", {})
-    
     if assignment.get("type") == "document":
-        await context.bot.send_document(
-            chat_id=ADMIN_CHAT_ID,
-            document=assignment["file_id"],
-            caption=assignment["full_caption"][:1024]
-        )
+        await context.bot.send_document(ADMIN_CHAT_ID, document=assignment["file_id"], caption=assignment["full_caption"][:1024])
     elif assignment.get("type") == "photo":
-        await context.bot.send_photo(
-            chat_id=ADMIN_CHAT_ID,
-            photo=assignment["file_id"],
-            caption=assignment["full_caption"][:1024]
-        )
+        await context.bot.send_photo(ADMIN_CHAT_ID, photo=assignment["file_id"], caption=assignment["full_caption"][:1024])
     elif assignment.get("type") == "text":
-        await context.bot.send_message(
-            chat_id=ADMIN_CHAT_ID,
-            text=assignment["full_caption"]
-        )
-    
-    # Теперь отправляем детали заказа
+        await context.bot.send_message(ADMIN_CHAT_ID, text=assignment["full_caption"])
+
     lines = [
         "<b>Новый заказ / New Order</b>",
         f"Клиент / Client: {user.full_name} (@{user.username}) id={user.id}",
@@ -732,114 +568,63 @@ async def notify_admin_with_assignment(context, user, order, calc, paid, payment
         f"Объяснения / Explanations: {'Да' if order.get('explain') else 'Нет'}",
         f"Срок / Deadline: {order.get('days')} дн / days",
     ]
-    
     if order.get("type") in ("Задание", "Лабораторная/Контрольная", "Экзаменационный вопрос"):
         lines.append(f"Количество заданий / Quantity: {order.get('extra_count')}")
-    
+
     lines.append("")
     lines.append("<b>Детализация / Breakdown:</b>")
     lines.extend(calc["breakdown_rub"])
     lines.append("---")
-    lines.extend(calc["breakdown_usd"])
-    lines.append(f"\n<b>Итого / Total: {calc['total_rub']}₽ / ${calc['total_usd']}</b>")
-    
-    if paid:
-        lines.append("✅ Статус: ОПЛАЧЕН / Status: PAID")
-    else:
-        lines.append("⏳ Статус: ЖДУ ОПЛАТУ / Status: AWAITING PAYMENT")
-    
+    lines.extend(calc["breakdown_eur"])
+    lines.append(f"\n<b>Итого / Total: {calc['total_rub']}₽ / {calc['total_eur']}€</b>")
+    lines.append("✅ Статус: ОПЛАЧЕН / Status: PAID" if paid else "⏳ Статус: ЖДУ ОПЛАТУ / Status: AWAITING PAYMENT")
+
     text = "\n".join(lines)
-    
-    # Создаем кнопку для связи с клиентом
-    keyboard = []
-    if user.username:
-        keyboard.append([
-            InlineKeyboardButton(
-                "💬 Написать клиенту / Message Client", 
-                url=f"https://t.me/{user.username}"
-            )
-        ])
-    
+    keyboard = [[InlineKeyboardButton("💬 Написать клиенту / Message Client", url=f"https://t.me/{user.username}")]] if user.username else []
+
     try:
-        await context.bot.send_message(
-            chat_id=ADMIN_CHAT_ID,
-            text=text,
-            parse_mode="HTML",
-            reply_markup=InlineKeyboardMarkup(keyboard) if keyboard else None
-        )
+        await context.bot.send_message(ADMIN_CHAT_ID, text=text, parse_mode="HTML",
+                                       reply_markup=InlineKeyboardMarkup(keyboard) if keyboard else None)
         logger.info(f"Общее уведомление админу отправлено: {user.full_name}")
     except Exception as e:
         logger.error(f"Не удалось уведомить администратора: {e}")
 
-# ========== ЗАПУСК БОТА ==========
+# ========== ЗАПУСК ==========
 def main() -> None:
-    """Главная функция запуска бота"""
     logger.info("=" * 50)
     logger.info("ЗАПУСК ТЕЛЕГРАМ БОТА")
     logger.info(f"Токен: {'***' + TOKEN[-4:] if TOKEN else 'НЕ УСТАНОВЛЕН'}")
     logger.info(f"Admin ID: {ADMIN_CHAT_ID}")
     logger.info("=" * 50)
-    
-    # Создаем приложение
+
     app = ApplicationBuilder().token(TOKEN).build()
-    
-    # Создаем ConversationHandler
+
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
         states={
-            TYPE_CHOICE: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, type_choice),
-            ],
-            SEND_FILE: [
-                MessageHandler(
-                    (filters.Document.ALL | filters.PHOTO | filters.TEXT) & ~filters.COMMAND, 
-                    send_file
-                ),
-            ],
-            EXPLAIN_CHOICE: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, explain_choice),
-            ],
-            DEADLINE_CHOICE: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, deadline_choice),
-            ],
-            EXTRA_PARAMS: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, extra_params),
-            ],
-            CONFIRM_ORDER: [
-                CallbackQueryHandler(confirm_callback),
-            ],
-            PAYMENT: [
-                MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment_handler),
-            ],
-            WAITING_FOR_RECEIPT: [
-                MessageHandler(filters.ChatType.PRIVATE & ~filters.COMMAND, waiting_for_receipt),
-            ],
+            TYPE_CHOICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, type_choice)],
+            SEND_FILE: [MessageHandler((filters.Document.ALL | filters.PHOTO | filters.TEXT) & ~filters.COMMAND, send_file)],
+            EXPLAIN_CHOICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, explain_choice)],
+            DEADLINE_CHOICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, deadline_choice)],
+            EXTRA_PARAMS: [MessageHandler(filters.TEXT & ~filters.COMMAND, extra_params)],
+            CONFIRM_ORDER: [CallbackQueryHandler(confirm_callback)],
+            PAYMENT: [MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment_handler)],
+            WAITING_FOR_RECEIPT: [MessageHandler(filters.ChatType.PRIVATE & ~filters.COMMAND, waiting_for_receipt)],
         },
-        fallbacks=[
-            CommandHandler("cancel", cancel),
-            CommandHandler("start", start),
-        ],
+        fallbacks=[CommandHandler("cancel", cancel), CommandHandler("start", start)],
         allow_reentry=True,
         per_user=True,
         per_chat=True,
     )
-    
-    # Добавляем обработчики в приложение
+
     app.add_handler(conv_handler)
     app.add_handler(PreCheckoutQueryHandler(precheckout_handler))
     app.add_error_handler(error_handler)
-    
-    # Определяем режим запуска
+
     WEBHOOK_URL = os.getenv("WEBHOOK_URL")
-    
     if WEBHOOK_URL:
-        # Webhook режим для Railway
         port = int(os.getenv("PORT", 8080))
-        
-        logger.info(f"Запуск в режиме WEBHOOK")
-        logger.info(f"URL: {WEBHOOK_URL}")
-        logger.info(f"Порт: {port}")
-        
+        logger.info(f"Запуск в режиме WEBHOOK: {WEBHOOK_URL}:{port}")
         try:
             app.run_webhook(
                 listen="0.0.0.0",
@@ -849,12 +634,9 @@ def main() -> None:
                 drop_pending_updates=True,
             )
         except Exception as e:
-            logger.error(f"Ошибка при запуске webhook: {e}")
-            # Пробуем запустить polling как fallback
-            logger.info("Пробую запустить polling...")
+            logger.error(f"Ошибка webhook: {e}")
             app.run_polling(drop_pending_updates=True)
     else:
-        # Polling режим для локальной разработки
         logger.info("Запуск в режиме POLLING")
         app.run_polling(drop_pending_updates=True)
 
@@ -865,6 +647,5 @@ if __name__ == "__main__":
         logger.info("Бот остановлен пользователем")
     except Exception as e:
         logger.error(f"Критическая ошибка: {e}", exc_info=True)
-        # Даем время на запись логов
         import time
         time.sleep(5)
