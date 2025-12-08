@@ -203,6 +203,14 @@ def parse_choice_text(text: str) -> str:
     
     return clean
 
+price_lines = []
+for work_type, rub_price in BASE_PRICES.items():
+    en_type = WORK_TYPES_TRANSLATIONS.get(work_type, work_type)
+    usd_price = BASE_PRICES_USD.get(work_type, 0)
+    price_lines.append(f"• {work_type} — {rub_price}₽ / ${usd_price} ({en_type})")
+
+price_list_text = "\n".join(price_lines)
+
 # ========== ТЕКСТЫ СООБЩЕНИЙ ==========
 PHRASES = {
     "start_welcome": (
@@ -856,4 +864,5 @@ if __name__ == "__main__":
         # Даем время на запись логов
         import time
         time.sleep(5)
+
 
