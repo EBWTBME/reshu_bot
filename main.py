@@ -74,7 +74,7 @@ BASE_PRICES_USD = {
     "Лабораторная/Контрольная": 9.99,
     "Экзаменационный вопрос": 9.99,
     "Практика": 49,
-    "Курсовая":99,
+    "Курсовая": 99,
     "Дипломная": 259,
     "Презентация для курсовой": 19,
     "Презентация для диплома": 49,
@@ -97,6 +97,17 @@ WORK_TYPES_TRANSLATIONS = {
     "Презентация для курсовой": "Presentation for Coursework",
     "Презентация для диплома": "Presentation for Thesis",
 }
+
+# ========== ГЕНЕРАЦИЯ ПРАЙС-ЛИСТА ==========
+price_lines = []
+for work_type, rub_price in BASE_PRICES.items():
+    en_type = WORK_TYPES_TRANSLATIONS.get(work_type, work_type)
+    usd_price = BASE_PRICES_USD.get(work_type, 0)
+    # Округляем USD до 2 знаков для красоты (хотя в BASE_PRICES_USD уже float)
+    usd_price = round(usd_price, 2)
+    price_lines.append(f"• {work_type} — {rub_price}₽ / ${usd_price} ({en_type})")
+
+price_list_text = "\n".join(price_lines)
 
 # ========== ФУНКЦИИ ==========
 def format_price_rub_usd(rub: int, usd: int) -> str:
@@ -203,21 +214,14 @@ def parse_choice_text(text: str) -> str:
     
     return clean
 
-price_lines = []
-for work_type, rub_price in BASE_PRICES.items():
-    en_type = WORK_TYPES_TRANSLATIONS.get(work_type, work_type)
-    usd_price = BASE_PRICES_USD.get(work_type, 0)
-    price_lines.append(f"• {work_type} — {rub_price}₽ / ${usd_price} ({en_type})")
-
-price_list_text = "\n".join(price_lines)
-
 # ========== ТЕКСТЫ СООБЩЕНИЙ ==========
 PHRASES = {
     "start_welcome": (
-        f"{EMOJI_PRIMARY} <b>Заходи за решением! / Come in for a solution! </b>\n\n"
+        f"{EMOJI_PRIMARY} <b>Заходи за решением! / Come in for a solution!</b>\n\n"
         "Привет! Я помогу вам оперативно и качественно решить учебные задания.\n"
         "Hi! I'll help you solve your academic assignments quickly and reliably.\n\n"
-        "<b>Прайс-лист / Price List</b> 💰"
+        "<b>Прайс-лист / Price List</b> 💰\n\n"
+        f"{price_list_text}"
     ),
     "start_types": "Выберите тип работы / Choose work type:",
     "type_chosen": "Вы выбрали: {ru} / You have chosen: {en}.",
@@ -864,5 +868,3 @@ if __name__ == "__main__":
         # Даем время на запись логов
         import time
         time.sleep(5)
-
-
