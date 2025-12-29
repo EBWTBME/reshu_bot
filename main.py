@@ -26,7 +26,7 @@ from telegram.ext import (
 from telegram.error import Forbidden, TelegramError
 
 # ========== КОНФИГУРАЦИЯ ==========
-TOKEN = os.getenv("TG_BOT_TOKEN")
+TOKEN = os.getenv("TG_BOT_TOKEN", "8305490732:AAHhV5MceF35nmbGjvC23tajpWOY1zrYspg")
 if not TOKEN:
     raise ValueError("❌ TG_BOT_TOKEN не установлен! Установите переменную окружения.")
 
@@ -649,4 +649,5 @@ if __name__ == "__main__":
         logger.error(f"Критическая ошибка: {e}", exc_info=True)
         import time
         time.sleep(5)
+
 
