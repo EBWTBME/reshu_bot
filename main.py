@@ -2,6 +2,7 @@
 
 import logging
 import os
+import time
 from typing import Dict, Any
 
 from telegram import (
@@ -26,9 +27,13 @@ from telegram.ext import (
 from telegram.error import Forbidden, TelegramError
 
 # ========== КОНФИГУРАЦИЯ ==========
-TOKEN = os.getenv("TG_BOT_TOKEN", "8305490732:AAHhV5MceF35nmbGjvC23tajpWOY1zrYspg")
+# Получаем токен из переменных окружения Bothost
+TOKEN = os.getenv("TG_BOT_TOKEN")
 if not TOKEN:
-    raise ValueError("❌ TG_BOT_TOKEN не установлен! Установите переменную окружения.")
+    # Проверяем, не используем ли мы хардкодный токен
+    TOKEN = "8305490732:AAHhV5MceF35nmbGjvC23tajpWOY1zrYspg"
+    if TOKEN == "8305490732:AAHhV5MceF35nmbGjvC23tajpWOY1zrYspg":
+        logging.error("⚠️ Используется хардкодный токен! Создайте новый через @BotFather")
 
 ADMIN_CHAT_ID = int(os.getenv("ADMIN_CHAT_ID", "888140003"))
 PAYMENTS_PROVIDER_TOKEN = os.getenv("PAYMENTS_PROVIDER_TOKEN", "")
@@ -72,7 +77,7 @@ BASE_PRICES = {
 BASE_PRICES_EUR = {k: v // 100 for k, v in BASE_PRICES.items()}
 
 # ========== ДОПЛАТА ЗА ОБЪЯСНЕНИЯ (в рублях) ==========
-EXPLAIN_SURCHARGGES = {
+EXPLAIN_SURCHARGES = {
     "default": 2999,
     "Курсовая": 5999,
     "Дипломная": 15999,
@@ -130,7 +135,7 @@ def calculate_price(selection: Dict[str, Any]) -> Dict[str, Any]:
         total_eur += base_eur
 
     if explain:
-        surcharge_rub = EXPLAIN_SURCHARGGES.get(t, EXPLAIN_SURCHARGGES["default"])
+        surcharge_rub = EXPLAIN_SURCHARGES.get(t, EXPLAIN_SURCHARGES["default"])
         surcharge_eur = surcharge_rub // 100
         breakdown_rub.append(f"За объяснения = +{surcharge_rub}₽")
         breakdown_eur.append(f"For explanations = +{surcharge_eur}€")
@@ -331,45 +336,92 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 async def type_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_text = update.message.text
+    logger.info(f"Пользователь выбрал: {user_text}")
+    
     if "отмен" in user_text.lower() or "❌" in user_text:
         return await cancel(update, context)
+    
     text = parse_choice_text(user_text)
+    
     if text not in BASE_PRICES:
+        logger.warning(f"Неизвестный тип: {text}")
         await update.message.reply_text(PHRASES["invalid_input"])
         return TYPE_CHOICE
+    
     context.user_data["order"]["type"] = text
-    en_text = WORK_TYPES_TRANSLATIONS[text]
+    en_text = WORK_TYPES_TRANSLATIONS.get(text, text)
+    
     await update.message.reply_text(
         PHRASES["type_chosen"].format(ru=text, en=en_text),
-        reply_markup=ReplyKeyboardMarkup([[KeyboardButton("❌ Отменить заказ / Cancel order")]], resize_keyboard=True),
+        reply_markup=ReplyKeyboardMarkup(
+            [[KeyboardButton("❌ Отменить заказ / Cancel order")]], 
+            resize_keyboard=True
+        ),
         parse_mode="HTML"
     )
+    
     await update.message.reply_text(PHRASES["send_file_prompt"], parse_mode="HTML")
     return SEND_FILE
 
 async def send_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user = update.effective_user
     caption_for_admin = f"📩 Задание от {user.full_name} (@{user.username} | id={user.id})"
+    
     if update.message.text and ("отмен" in update.message.text.lower() or "❌" in update.message.text):
         return await cancel(update, context)
 
     if update.message.document:
+        file_id = update.message.document.file_id
+        caption_text = update.message.caption or ""
+        full_caption = f"{caption_for_admin}\n\n📝 Подпись: {caption_text}" if caption_text else caption_for_admin
+        
+        # Отправляем админу
+        try:
+            await context.bot.send_document(ADMIN_CHAT_ID, document=file_id, caption=full_caption[:1024])
+        except Exception as e:
+            logger.error(f"Ошибка отправки документа админу: {e}")
+        
         context.user_data["order"]["assignment"] = {
             "type": "document",
-            "file_id": update.message.document.file_id,
-            "caption": update.message.caption or "",
-            "full_caption": f"{caption_for_admin}\n\n📝 Подпись: {update.message.caption}" if update.message.caption else caption_for_admin
+            "file_id": file_id,
+            "caption": caption_text,
+            "full_caption": full_caption
         }
         await update.message.reply_text(PHRASES["file_received"])
+        
     elif update.message.photo:
+        file_id = update.message.photo[-1].file_id
+        caption_text = update.message.caption or ""
+        full_caption = f"{caption_for_admin}\n\n📝 Подпись: {caption_text}" if caption_text else caption_for_admin
+        
+        # Отправляем админу
+        try:
+            await context.bot.send_photo(ADMIN_CHAT_ID, photo=file_id, caption=full_caption[:1024])
+        except Exception as e:
+            logger.error(f"Ошибка отправки фото админу: {e}")
+        
         context.user_data["order"]["assignment"] = {
             "type": "photo",
-            "file_id": update.message.photo[-1].file_id,
-            "caption": update.message.caption or "",
-            "full_caption": f"{caption_for_admin}\n\n📝 Подпись: {update.message.caption}" if update.message.caption else caption_for_admin
+            "file_id": file_id,
+            "caption": caption_text,
+            "full_caption": full_caption
         }
         await update.message.reply_text(PHRASES["photo_received"])
+        
     elif update.message.text:
+        # Проверка на отмену
+        if "отмен" in update.message.text.lower() or "❌" in update.message.text:
+            return await cancel(update, context)
+        
+        # Отправляем админу
+        try:
+            await context.bot.send_message(
+                ADMIN_CHAT_ID, 
+                text=f"{caption_for_admin}:\n\n{update.message.text}"
+            )
+        except Exception as e:
+            logger.error(f"Ошибка отправки текста админу: {e}")
+        
         context.user_data["order"]["assignment"] = {
             "type": "text",
             "content": update.message.text,
@@ -385,7 +437,8 @@ async def send_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
             [KeyboardButton(f"{EMOJI_PRIMARY} Да / Yes"), KeyboardButton(f"{EMOJI_SECONDARY} Нет / No")],
             [KeyboardButton("❌ Отменить заказ / Cancel order")]
         ],
-        resize_keyboard=True, one_time_keyboard=True
+        resize_keyboard=True, 
+        one_time_keyboard=True
     )
     await update.message.reply_text(PHRASES["explain_prompt"], reply_markup=kb)
     return EXPLAIN_CHOICE
@@ -393,6 +446,7 @@ async def send_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 async def explain_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if "отмен" in update.message.text.lower() or "❌" in update.message.text:
         return await cancel(update, context)
+    
     text = update.message.text.lower()
     if "да" in text or "yes" in text:
         context.user_data["order"]["explain"] = True
@@ -403,12 +457,14 @@ async def explain_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     else:
         await update.message.reply_text(PHRASES["explain_error"])
         return EXPLAIN_CHOICE
+    
     await update.message.reply_text(PHRASES["deadline_prompt"])
     return DEADLINE_CHOICE
 
 async def deadline_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if "отмен" in update.message.text.lower() or "❌" in update.message.text:
         return await cancel(update, context)
+    
     try:
         days = int(update.message.text.strip())
         if days < 1:
@@ -427,6 +483,7 @@ async def deadline_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 async def extra_params(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if "отмен" in update.message.text.lower() or "❌" in update.message.text:
         return await cancel(update, context)
+    
     try:
         count = int(update.message.text.strip())
         if count < 1:
@@ -435,10 +492,12 @@ async def extra_params(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     except (ValueError, AttributeError):
         await update.message.reply_text(PHRASES["invalid_count"])
         return EXTRA_PARAMS
+    
     return await show_confirmation(update, context)
 
 async def show_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     order = context.user_data.get("order", {})
+    
     if "extra_count" not in order:
         order["extra_count"] = 1
 
@@ -467,12 +526,18 @@ async def show_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         [InlineKeyboardButton(PHRASES["confirm_button"], callback_data="confirm_pay")],
         [InlineKeyboardButton(PHRASES["cancel_button"], callback_data="cancel")],
     ]
-    await update.message.reply_html(summary_text, reply_markup=InlineKeyboardMarkup(buttons))
+    
+    await update.message.reply_html(
+        summary_text, 
+        reply_markup=InlineKeyboardMarkup(buttons)
+    )
+    
     return CONFIRM_ORDER
 
 async def confirm_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
+    
     if query.data == "cancel":
         context.user_data.clear()
         await query.edit_message_text(PHRASES["cancel_order"])
@@ -481,7 +546,11 @@ async def confirm_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     order = context.user_data.get("order", {})
     calc = calculate_price(order)
     total_rub = calc["total_rub"]
-
+    total_eur = calc["total_eur"]
+    
+    # Уведомляем админа о новом заказе
+    await notify_admin_with_assignment(context, update.effective_user, order, calc, paid=False)
+    
     provider_token = PAYMENTS_PROVIDER_TOKEN.strip()
     if provider_token:
         try:
@@ -502,7 +571,7 @@ async def confirm_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
     payment_text = PHRASES["payment_prompt"].format(
         total_rub=total_rub,
-        total_eur=calc["total_eur"]
+        total_eur=total_eur
     )
     await query.edit_message_text(payment_text, parse_mode="HTML")
     return WAITING_FOR_RECEIPT
@@ -514,23 +583,48 @@ async def successful_payment_handler(update: Update, context: ContextTypes.DEFAU
     user = update.effective_user
     order = context.user_data.get("order", {})
     calc = calculate_price(order)
-    await notify_admin_with_assignment(context, user, order, calc, paid=True)
+    
+    await notify_admin_with_assignment(
+        context, user, order, calc, 
+        paid=True, 
+        payment=update.message.successful_payment
+    )
 
     keyboard = [[KeyboardButton("/start")]]
-    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
-    await update.message.reply_text(PHRASES["successful_payment"], reply_markup=reply_markup, parse_mode="HTML")
+    reply_markup = ReplyKeyboardMarkup(
+        keyboard, 
+        resize_keyboard=True, 
+        one_time_keyboard=True
+    )
+    
+    await update.message.reply_text(
+        PHRASES["successful_payment"], 
+        reply_markup=reply_markup, 
+        parse_mode="HTML"
+    )
+    
     context.user_data.clear()
     return ConversationHandler.END
 
 async def waiting_for_receipt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user = update.effective_user
+    
     if update.message.photo or update.message.document:
         caption = f"📸 Чек от {user.full_name} (@{user.username} | id={user.id})"
+        
         try:
             if update.message.photo:
-                await context.bot.send_photo(ADMIN_CHAT_ID, photo=update.message.photo[-1].file_id, caption=caption)
+                await context.bot.send_photo(
+                    ADMIN_CHAT_ID, 
+                    photo=update.message.photo[-1].file_id, 
+                    caption=caption
+                )
             elif update.message.document:
-                await context.bot.send_document(ADMIN_CHAT_ID, document=update.message.document.file_id, caption=caption)
+                await context.bot.send_document(
+                    ADMIN_CHAT_ID, 
+                    document=update.message.document.file_id, 
+                    caption=caption
+                )
 
             order = context.user_data.get("order", {})
             if order:
@@ -538,8 +632,17 @@ async def waiting_for_receipt(update: Update, context: ContextTypes.DEFAULT_TYPE
                 await notify_admin_with_assignment(context, user, order, calc, paid=True)
 
             keyboard = [[KeyboardButton("/start")]]
-            reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
-            await update.message.reply_text(PHRASES["receipt_received"], reply_markup=reply_markup, parse_mode="HTML")
+            reply_markup = ReplyKeyboardMarkup(
+                keyboard, 
+                resize_keyboard=True, 
+                one_time_keyboard=True
+            )
+            
+            await update.message.reply_text(
+                PHRASES["receipt_received"], 
+                reply_markup=reply_markup, 
+                parse_mode="HTML"
+            )
 
         except Exception as e:
             logger.error(f"Ошибка при пересылке чека: {e}")
@@ -553,14 +656,32 @@ async def waiting_for_receipt(update: Update, context: ContextTypes.DEFAULT_TYPE
     return WAITING_FOR_RECEIPT
 
 async def notify_admin_with_assignment(context, user, order, calc, paid, payment=None):
+    """Отправка уведомления администратору с прикрепленным заданием"""
     assignment = order.get("assignment", {})
-    if assignment.get("type") == "document":
-        await context.bot.send_document(ADMIN_CHAT_ID, document=assignment["file_id"], caption=assignment["full_caption"][:1024])
-    elif assignment.get("type") == "photo":
-        await context.bot.send_photo(ADMIN_CHAT_ID, photo=assignment["file_id"], caption=assignment["full_caption"][:1024])
-    elif assignment.get("type") == "text":
-        await context.bot.send_message(ADMIN_CHAT_ID, text=assignment["full_caption"])
-
+    
+    # Отправляем задание админу
+    try:
+        if assignment.get("type") == "document":
+            await context.bot.send_document(
+                ADMIN_CHAT_ID, 
+                document=assignment["file_id"], 
+                caption=assignment["full_caption"][:1024]
+            )
+        elif assignment.get("type") == "photo":
+            await context.bot.send_photo(
+                ADMIN_CHAT_ID, 
+                photo=assignment["file_id"], 
+                caption=assignment["full_caption"][:1024]
+            )
+        elif assignment.get("type") == "text":
+            await context.bot.send_message(
+                ADMIN_CHAT_ID, 
+                text=assignment["full_caption"]
+            )
+    except Exception as e:
+        logger.error(f"Ошибка отправки задания админу: {e}")
+    
+    # Отправляем детали заказа
     lines = [
         "<b>Новый заказ / New Order</b>",
         f"Клиент / Client: {user.full_name} (@{user.username}) id={user.id}",
@@ -568,6 +689,7 @@ async def notify_admin_with_assignment(context, user, order, calc, paid, payment
         f"Объяснения / Explanations: {'Да' if order.get('explain') else 'Нет'}",
         f"Срок / Deadline: {order.get('days')} дн / days",
     ]
+    
     if order.get("type") in ("Задание", "Лабораторная/Контрольная", "Экзаменационный вопрос"):
         lines.append(f"Количество заданий / Quantity: {order.get('extra_count')}")
 
@@ -577,25 +699,54 @@ async def notify_admin_with_assignment(context, user, order, calc, paid, payment
     lines.append("---")
     lines.extend(calc["breakdown_eur"])
     lines.append(f"\n<b>Итого / Total: {calc['total_rub']}₽ / {calc['total_eur']}€</b>")
-    lines.append("✅ Статус: ОПЛАЧЕН / Status: PAID" if paid else "⏳ Статус: ЖДУ ОПЛАТУ / Status: AWAITING PAYMENT")
+    
+    if paid:
+        lines.append("✅ Статус: ОПЛАЧЕН / Status: PAID")
+    else:
+        lines.append("⏳ Статус: ЖДУ ОПЛАТУ / Status: AWAITING PAYMENT")
 
     text = "\n".join(lines)
-    keyboard = [[InlineKeyboardButton("💬 Написать клиенту / Message Client", url=f"https://t.me/{user.username}")]] if user.username else []
+    keyboard = []
+    
+    if user.username:
+        keyboard.append([
+            InlineKeyboardButton(
+                "💬 Написать клиенту / Message Client", 
+                url=f"https://t.me/{user.username}"
+            )
+        ])
 
     try:
-        await context.bot.send_message(ADMIN_CHAT_ID, text=text, parse_mode="HTML",
-                                       reply_markup=InlineKeyboardMarkup(keyboard) if keyboard else None)
+        await context.bot.send_message(
+            ADMIN_CHAT_ID,
+            text=text,
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(keyboard) if keyboard else None
+        )
         logger.info(f"Общее уведомление админу отправлено: {user.full_name}")
     except Exception as e:
         logger.error(f"Не удалось уведомить администратора: {e}")
 
 # ========== ЗАПУСК ==========
 def main() -> None:
+    """Главная функция запуска бота"""
     logger.info("=" * 50)
     logger.info("ЗАПУСК ТЕЛЕГРАМ БОТА")
     logger.info(f"Токен: {'***' + TOKEN[-4:] if TOKEN else 'НЕ УСТАНОВЛЕН'}")
     logger.info(f"Admin ID: {ADMIN_CHAT_ID}")
+    logger.info(f"Работает на Bothost: {os.getenv('BOTHOST', 'ДА')}")
     logger.info("=" * 50)
+
+    if not TOKEN:
+        logger.error("❌ Токен бота не установлен!")
+        logger.error("Добавьте переменную окружения TG_BOT_TOKEN в Bothost:")
+        logger.error("1. Зайдите в панель Bothost")
+        logger.error("2. Откройте настройки вашего бота")
+        logger.error("3. Добавьте переменную TG_BOT_TOKEN")
+        logger.error("4. Вставьте значение вашего токена")
+        logger.error("5. Перезапустите бота")
+        logger.error("=" * 50)
+        return
 
     app = ApplicationBuilder().token(TOKEN).build()
 
@@ -621,10 +772,14 @@ def main() -> None:
     app.add_handler(PreCheckoutQueryHandler(precheckout_handler))
     app.add_error_handler(error_handler)
 
+    # Проверяем, работает ли на Bothost
     WEBHOOK_URL = os.getenv("WEBHOOK_URL")
-    if WEBHOOK_URL:
+    
+    if WEBHOOK_URL and "bothost" in WEBHOOK_URL:
+        # Bothost сам настроит вебхук
         port = int(os.getenv("PORT", 8080))
-        logger.info(f"Запуск в режиме WEBHOOK: {WEBHOOK_URL}:{port}")
+        logger.info(f"Запуск в режиме WEBHOOK для Bothost: {WEBHOOK_URL}")
+        
         try:
             app.run_webhook(
                 listen="0.0.0.0",
@@ -634,11 +789,16 @@ def main() -> None:
                 drop_pending_updates=True,
             )
         except Exception as e:
-            logger.error(f"Ошибка webhook: {e}")
+            logger.error(f"Ошибка при запуске webhook: {e}")
+            logger.info("Пробую запустить polling...")
             app.run_polling(drop_pending_updates=True)
     else:
+        # Polling режим
         logger.info("Запуск в режиме POLLING")
-        app.run_polling(drop_pending_updates=True)
+        app.run_polling(
+            drop_pending_updates=True,
+            close_loop=False
+        )
 
 if __name__ == "__main__":
     try:
@@ -647,7 +807,5 @@ if __name__ == "__main__":
         logger.info("Бот остановлен пользователем")
     except Exception as e:
         logger.error(f"Критическая ошибка: {e}", exc_info=True)
-        import time
+        # Даем время на запись логов
         time.sleep(5)
-
-
