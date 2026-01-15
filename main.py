@@ -61,12 +61,12 @@ logger = logging.getLogger(__name__)
 
 # ========== ЦЕНЫ В РУБЛЯХ ==========
 BASE_PRICES = {
-    "Задание": 399,
-    "Лабораторная/Контрольная": 999,
-    "Экзаменационный вопрос": 999,
-    "Практика": 4999,
-    "Курсовая": 9999,
-    "Дипломная": 25999,
+    "Задание": 199,
+    "Лабораторная/Контрольная": 499,
+    "Экзаменационный вопрос": 599,
+    "Практика": 2999,
+    "Курсовая": 6999,
+    "Дипломная": 19999,
     "Презентация для курсовой": 1999,
     "Презентация для диплома": 4999,
 }
@@ -76,10 +76,10 @@ BASE_PRICES_EUR = {k: v // 100 for k, v in BASE_PRICES.items()}
 
 # ========== ДОПЛАТА ЗА ОБЪЯСНЕНИЯ ==========
 EXPLAIN_SURCHARGES = {
-    "default": 2999,
-    "Курсовая": 5999,
-    "Дипломная": 15999,
-    "Практика": 1999,
+    "default": 1999,
+    "Курсовая": 3999,
+    "Дипломная": 9999,
+    "Практика": 999,
 }
 
 # ========== ПЕРЕВОДЫ ТИПОВ РАБОТ ==========
@@ -144,9 +144,9 @@ def calculate_price(selection: Dict[str, Any]) -> Dict[str, Any]:
     urgency_eur = 0
     if days > 0:
         if t in ("Задание", "Лабораторная/Контрольная"):
-            urgency_rub = max(1500 - 100 * (days - 1), 0)
+            urgency_rub = max(1000 - 100 * (days - 1), 0)
         elif t == "Экзаменационный вопрос":
-            urgency_rub = max(2000 - 200 * (days - 1), 0)
+            urgency_rub = max(1500 - 100 * (days - 1), 0)
         elif t == "Практика":
             urgency_rub = max(4000 - 250 * (days - 1), 0)
         elif t in ("Курсовая", "Презентация для курсовой"):
@@ -225,9 +225,9 @@ PHRASES = {
     ),
     "explain_prompt": (
         "Нужны ли подробные объяснения каждого шага решения?\n"
-        "За +2999₽ (за задания) / +5999₽ (за Курсовую) / +1999₽ (за Практику) / +15999₽ (за Дипломную) — я подробно объясню каждое задание и весь ход решения.\n\n"
+        "За +1999₽ (за задания) / +3999₽ (за Курсовую) / +999₽ (за Практику) / +9999₽ (за Дипломную) — я подробно объясню каждое задание и весь ход решения.\n\n"
         "Need detailed explanations?\n"
-        "For +30€ (Assignments) / +60€ (Coursework) / +20€ (Practice) / +160€ (Thesis) — I'll explain each task and the entire solution process in detail."
+        "For +20€ (Assignments) / +40€ (Coursework) / +10€ (Practice) / +100€ (Thesis) — I'll explain each task and the entire solution process in detail."
     ),
     "explain_yes": "✅ Объяснения включены.\n✅ Explanations enabled.",
     "explain_no": "✅ Объяснения отключены.\n✅ Explanations disabled.",
@@ -814,3 +814,4 @@ if __name__ == "__main__":
     except Exception as e:
         logger.error(f"Критическая ошибка: {e}", exc_info=True)
         time.sleep(5)
+
